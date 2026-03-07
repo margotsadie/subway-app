@@ -24,7 +24,7 @@ function displayRoute(id: string): string {
  * MTA provides both "en" (plain text) and "en-html" (HTML) — prefer "en".
  */
 function pickTranslation(
-  ts?: { translation?: Array<{ text?: string; language?: string }> }
+  ts?: { translation?: Array<{ text?: string; language?: string }> } | null
 ): string {
   if (!ts?.translation?.length) return ""
 
