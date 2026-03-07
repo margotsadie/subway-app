@@ -24,7 +24,7 @@ function displayRoute(id: string): string {
  * MTA provides both "en" (plain text) and "en-html" (HTML) — prefer "en".
  */
 function pickTranslation(
-  ts?: { translation?: Array<{ text?: string; language?: string }> } | null
+  ts?: { translation?: Array<{ text?: string; language?: string }> }
 ): string {
   if (!ts?.translation?.length) return ""
 
@@ -81,8 +81,10 @@ export async function GET() {
     if (!alert) continue
 
     // The protobuf decoder returns camelCase field names
-    const headerText = pickTranslation(alert.headerText)
-    const descText = pickTranslation(alert.descriptionText)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const headerText = pickTranslation(alert.headerText as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const descText = pickTranslation(alert.descriptionText as any)
 
     // Drop alerts with no meaningful text
     if (!headerText && !descText) continue
