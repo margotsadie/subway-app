@@ -93,11 +93,12 @@ function MapViewer() {
         limitToBounds
         centerOnInit
       >
-        {({ resetTransform, setTransform, state, centerView }) => {
+        {({ resetTransform, setTransform, instance, centerView }) => {
+          const st = instance.transformState
           latestRef.current = {
-            x: state?.positionX ?? latestRef.current.x,
-            y: state?.positionY ?? latestRef.current.y,
-            scale: state?.scale ?? latestRef.current.scale,
+            x: st?.positionX ?? latestRef.current.x,
+            y: st?.positionY ?? latestRef.current.y,
+            scale: st?.scale ?? latestRef.current.scale,
           }
 
           useEffect(() => {
