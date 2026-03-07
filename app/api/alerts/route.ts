@@ -3,7 +3,6 @@ import GtfsRealtimeBindings from "gtfs-realtime-bindings"
 
 export const runtime = "nodejs"
 
-// Valid NYC subway route IDs
 const SUBWAY_ROUTES = new Set([
   "1", "2", "3", "4", "5", "6", "6X", "7", "7X",
   "A", "B", "C", "D", "E", "F", "G",
@@ -11,7 +10,6 @@ const SUBWAY_ROUTES = new Set([
   "GS", "FS", "H", "SI", "SIR",
 ])
 
-// Normalize express variants for display (6X → 6, 7X → 7)
 function displayRoute(id: string): string {
   if (id === "6X") return "6"
   if (id === "7X") return "7"
@@ -19,23 +17,24 @@ function displayRoute(id: string): string {
   return id
 }
 
-/**
- * Pick the best translation from a TranslatedString.
- * MTA provides both "en" (plain text) and "en-html" (HTML) — prefer "en".
- */
+function sortRoutes(a: string, b: string): number {
+  const aNum = /^\d/.test(a)
+  const bNum = /^\d/.test(b)
+  if (aNum && !bNum) return -1
+  if (!aNum && bNum) return 1
+  return a.localeCompare(b)
+}
+
 function pickTranslation(
   ts?: { translation?: Array<{ text?: string; language?: string }> }
 ): string {
   if (!ts?.translation?.length) return ""
-
   const plain = ts.translation.find(
     (t) => t.language === "en" && t.text?.trim()
   )
   if (plain?.text) return plain.text.trim()
-
   const fallback = ts.translation.find((t) => t.text?.trim())
   if (fallback?.text) return stripHtml(fallback.text)
-
   return ""
 }
 
@@ -71,25 +70,36 @@ export async function GET() {
     new Uint8Array(arrayBuffer)
   )
 
-  const byLine: Record<
-    string,
-    Array<{ id: string; header: string; description: string }>
-  > = {}
+  const now = Date.now() / 1000
+  const alerts: Array<{
+    id: string
+    type: "delay" | "change"
+    routes: string[]
+    header: string
+    description: string
+  }> = []
+  const seen = new Set<string>()
 
   for (const entity of feed.entity ?? []) {
-    const alert = entity.alert
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const alert = entity.alert as any
     if (!alert) continue
 
-    // The protobuf decoder returns camelCase field names
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const headerText = pickTranslation(alert.headerText as any)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const descText = pickTranslation(alert.descriptionText as any)
+    // Only include alerts active right now
+    const periods = alert.activePeriod ?? []
+    if (periods.length > 0) {
+      const isActiveNow = periods.some((p: { start?: number; end?: number }) => {
+        const start = Number(p.start ?? 0)
+        const end = Number(p.end ?? 0)
+        return start <= now && (end === 0 || end >= now)
+      })
+      if (!isActiveNow) continue
+    }
 
-    // Drop alerts with no meaningful text
+    const headerText = pickTranslation(alert.headerText)
+    const descText = pickTranslation(alert.descriptionText)
     if (!headerText && !descText) continue
 
-    // Collect subway route IDs from informedEntity
     const routes = new Set<string>()
     for (const ie of alert.informedEntity ?? []) {
       const rid = (ie.routeId ?? "").trim()
@@ -97,44 +107,33 @@ export async function GET() {
         routes.add(displayRoute(rid))
       }
     }
-
-    // Skip alerts not tied to any subway route
     if (routes.size === 0) continue
 
-    for (const line of routes) {
-      byLine[line] ??= []
-      byLine[line].push({
-        id: entity.id ?? `${line}-${Math.random().toString(16).slice(2)}`,
-        header: headerText || "Service alert",
-        description: descText,
-      })
-    }
-  }
+    // Deduplicate by content
+    const sig = `${headerText}|||${descText}`
+    if (seen.has(sig)) continue
+    seen.add(sig)
 
-  // Deduplicate within each line bucket
-  for (const key of Object.keys(byLine)) {
-    const seen = new Set<string>()
-    byLine[key] = byLine[key].filter((item) => {
-      const sig = `${item.header}|||${item.description}`
-      if (seen.has(sig)) return false
-      seen.add(sig)
-      return true
+    alerts.push({
+      id: entity.id ?? `alert-${Math.random().toString(16).slice(2)}`,
+      type: (entity.id ?? "").startsWith("lmm:alert:") ? "delay" : "change",
+      routes: [...routes].sort(sortRoutes),
+      header: headerText || "Service alert",
+      description: descText,
     })
   }
 
-  // Sort keys: numbers first, then letters
-  const sorted: typeof byLine = {}
-  const keys = Object.keys(byLine).sort((a, b) => {
-    const aNum = /^\d/.test(a)
-    const bNum = /^\d/.test(b)
-    if (aNum && !bNum) return -1
-    if (!aNum && bNum) return 1
-    return a.localeCompare(b)
+  // Delays first, then changes
+  alerts.sort((a, b) => {
+    if (a.type !== b.type) return a.type === "delay" ? -1 : 1
+    return 0
   })
-  for (const k of keys) sorted[k] = byLine[k]
+
+  const affectedLines = [...new Set(alerts.flatMap((a) => a.routes))].sort(sortRoutes)
 
   return NextResponse.json({
     updatedAt: new Date().toISOString(),
-    byLine: sorted,
+    alerts,
+    affectedLines,
   })
 }
