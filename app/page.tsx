@@ -71,15 +71,17 @@ function LineBullet({ line, size = "md" }: { line: string; size?: "sm" | "md" })
   )
 }
 
-/** Line bubble in the status grid — shows badge dot for affected, grey for ok */
+/** Line bubble in the status grid — toggleable, shows badge dot + selected ring */
 function GridBubble({
   line,
   status,
+  selected,
   onTap,
 }: {
   line: string
   status: "ok" | "delay" | "change"
-  onTap?: () => void
+  selected: boolean
+  onTap: () => void
 }) {
   const isOk = status === "ok"
   const bg = isOk ? "#d4d4d8" : (LINE_COLORS[line] ?? "#808183")
@@ -92,8 +94,19 @@ function GridBubble({
       onClick={isOk ? undefined : onTap}
       disabled={isOk}
       style={{ position: "relative", cursor: isOk ? "default" : "pointer" }}
-      aria-label={`${line} line — ${isOk ? "good service" : status}`}
+      aria-label={`${line} line — ${isOk ? "good service" : status}${selected ? " (selected)" : ""}`}
     >
+      {/* Selected ring */}
+      {selected && (
+        <span
+          style={{
+            position: "absolute",
+            inset: -4,
+            borderRadius: "50%",
+            border: "2.5px solid #3b82f6",
+          }}
+        />
+      )}
       <span
         style={{
           display: "inline-flex",
@@ -152,9 +165,11 @@ function GridBubble({
 
 function LineGrid({
   lineStatus,
+  selectedLines,
   onLineTap,
 }: {
   lineStatus: Map<string, "ok" | "delay" | "change">
+  selectedLines: Set<string>
   onLineTap: (line: string) => void
 }) {
   return (
@@ -164,6 +179,7 @@ function LineGrid({
           key={l}
           line={l}
           status={lineStatus.get(l) ?? "ok"}
+          selected={selectedLines.has(l)}
           onTap={() => onLineTap(l)}
         />
       ))}
@@ -214,9 +230,7 @@ function AlertCard({
 // ---------- Views ----------
 
 function AlertsView({ payload }: { payload: AlertsPayload }) {
-  const [highlightedId, setHighlightedId] = useState<string | null>(null)
-  const delays = payload.alerts.filter((a) => a.type === "delay")
-  const changes = payload.alerts.filter((a) => a.type === "change")
+  const [selectedLines, setSelectedLines] = useState<Set<string>>(new Set())
 
   // Build line → worst alert type map
   const lineStatus = new Map<string, "ok" | "delay" | "change">()
@@ -229,17 +243,23 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
     }
   }
 
-  // Tap a line bubble → scroll to first matching alert + highlight it
+  // Toggle a line on/off
   const handleLineTap = (line: string) => {
-    const match = payload.alerts.find((a) => a.routes.includes(line))
-    if (!match) return
-    const el = document.getElementById(`alert-${match.id}`)
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" })
-      setHighlightedId(match.id)
-      setTimeout(() => setHighlightedId(null), 2000)
-    }
+    setSelectedLines((prev) => {
+      const next = new Set(prev)
+      if (next.has(line)) next.delete(line)
+      else next.add(line)
+      return next
+    })
   }
+
+  // Filter alerts: if nothing selected show all, otherwise only matching lines
+  const hasFilter = selectedLines.size > 0
+  const visible = hasFilter
+    ? payload.alerts.filter((a) => a.routes.some((r) => selectedLines.has(r)))
+    : payload.alerts
+  const delays = visible.filter((a) => a.type === "delay")
+  const changes = visible.filter((a) => a.type === "change")
 
   return (
     <div className="fixed inset-0 z-20 overflow-auto bg-zinc-100 dark:bg-black pt-16 pb-6 px-4">
@@ -247,9 +267,13 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
         {/* Line status grid */}
         <div className="rounded-2xl bg-white dark:bg-zinc-900 p-4 shadow-sm">
           <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-3 uppercase tracking-wide">
-            Line Status
+            Tap lines to filter alerts
           </div>
-          <LineGrid lineStatus={lineStatus} onLineTap={handleLineTap} />
+          <LineGrid
+            lineStatus={lineStatus}
+            selectedLines={selectedLines}
+            onLineTap={handleLineTap}
+          />
           <div className="mt-3 flex items-center justify-center gap-4 text-[11px] text-zinc-400 dark:text-zinc-500">
             <span className="flex items-center gap-1">
               <span className="inline-block w-2 h-2 rounded-full bg-red-500" /> Delay
@@ -261,6 +285,14 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
               <span className="inline-block w-2 h-2 rounded-full bg-green-500" /> Good
             </span>
           </div>
+          {hasFilter && (
+            <button
+              onClick={() => setSelectedLines(new Set())}
+              className="mt-2 w-full text-center text-xs text-blue-500 font-medium"
+            >
+              Clear filter — show all
+            </button>
+          )}
           <div className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500 text-center">
             Updated {new Date(payload.updatedAt).toLocaleTimeString()}
           </div>
@@ -277,7 +309,7 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
             </div>
             <div className="space-y-2">
               {delays.map((a) => (
-                <AlertCard key={a.id} alert={a} highlighted={a.id === highlightedId} />
+                <AlertCard key={a.id} alert={a} highlighted={false} />
               ))}
             </div>
           </div>
@@ -294,19 +326,30 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
             </div>
             <div className="space-y-2">
               {changes.map((a) => (
-                <AlertCard key={a.id} alert={a} highlighted={a.id === highlightedId} />
+                <AlertCard key={a.id} alert={a} highlighted={false} />
               ))}
             </div>
           </div>
         )}
 
-        {/* All clear */}
-        {payload.alerts.length === 0 && (
+        {/* All clear / no matches */}
+        {visible.length === 0 && (
           <div className="text-center py-12">
-            <div className="text-3xl mb-2 text-green-500 font-bold">Good Service</div>
-            <div className="text-sm text-zinc-500">
-              All lines running normally
-            </div>
+            {hasFilter ? (
+              <>
+                <div className="text-3xl mb-2 text-green-500 font-bold">Good Service</div>
+                <div className="text-sm text-zinc-500">
+                  No active alerts for selected lines
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-3xl mb-2 text-green-500 font-bold">Good Service</div>
+                <div className="text-sm text-zinc-500">
+                  All lines running normally
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
