@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useEffect, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch"
 
 // ---------- Types ----------
@@ -46,15 +46,8 @@ const ALL_LINES = [
 
 // ---------- Small components ----------
 
-function LineBullet({
-  line,
-  size = "md",
-  dimmed = false,
-}: {
-  line: string
-  size?: "sm" | "md"
-  dimmed?: boolean
-}) {
+/** Colored subway line circle used inside alert cards */
+function LineBullet({ line, size = "md" }: { line: string; size?: "sm" | "md" }) {
   const px = size === "sm" ? 24 : 36
   const fs = size === "sm" ? (line.length > 1 ? 9 : 12) : line.length > 1 ? 13 : 16
   return (
@@ -70,7 +63,6 @@ function LineBullet({
         color: DARK_TEXT.has(line) ? "#000" : "#fff",
         fontSize: fs,
         fontWeight: 700,
-        opacity: dimmed ? 0.2 : 1,
         flexShrink: 0,
       }}
     >
@@ -79,22 +71,123 @@ function LineBullet({
   )
 }
 
-function LineGrid({ affected }: { affected: Set<string> }) {
+/** Line bubble in the status grid — shows badge dot for affected, grey for ok */
+function GridBubble({
+  line,
+  status,
+  onTap,
+}: {
+  line: string
+  status: "ok" | "delay" | "change"
+  onTap?: () => void
+}) {
+  const isOk = status === "ok"
+  const bg = isOk ? "#d4d4d8" : (LINE_COLORS[line] ?? "#808183")
+  const fg = isOk ? "#a1a1aa" : DARK_TEXT.has(line) ? "#000" : "#fff"
+  const dotColor = status === "delay" ? "#ef4444" : status === "change" ? "#f59e0b" : undefined
+  const fs = line.length > 1 ? 13 : 16
+
   return (
-    <div className="grid grid-cols-7 gap-2 justify-items-center">
+    <button
+      onClick={isOk ? undefined : onTap}
+      disabled={isOk}
+      style={{ position: "relative", cursor: isOk ? "default" : "pointer" }}
+      aria-label={`${line} line — ${isOk ? "good service" : status}`}
+    >
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          backgroundColor: bg,
+          color: fg,
+          fontSize: fs,
+          fontWeight: 700,
+        }}
+      >
+        {line}
+      </span>
+      {dotColor && (
+        <span
+          style={{
+            position: "absolute",
+            top: -2,
+            right: -2,
+            width: 12,
+            height: 12,
+            borderRadius: "50%",
+            backgroundColor: dotColor,
+            border: "2px solid white",
+          }}
+        />
+      )}
+      {isOk && (
+        <span
+          style={{
+            position: "absolute",
+            bottom: -1,
+            right: -1,
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            backgroundColor: "#22c55e",
+            border: "2px solid white",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 8,
+            color: "#fff",
+            fontWeight: 700,
+          }}
+        >
+          ✓
+        </span>
+      )}
+    </button>
+  )
+}
+
+function LineGrid({
+  lineStatus,
+  onLineTap,
+}: {
+  lineStatus: Map<string, "ok" | "delay" | "change">
+  onLineTap: (line: string) => void
+}) {
+  return (
+    <div className="grid grid-cols-7 gap-3 justify-items-center">
       {ALL_LINES.map((l) => (
-        <LineBullet key={l} line={l} dimmed={!affected.has(l)} />
+        <GridBubble
+          key={l}
+          line={l}
+          status={lineStatus.get(l) ?? "ok"}
+          onTap={() => onLineTap(l)}
+        />
       ))}
     </div>
   )
 }
 
-function AlertCard({ alert }: { alert: AlertItem }) {
+function AlertCard({
+  alert,
+  highlighted,
+}: {
+  alert: AlertItem
+  highlighted: boolean
+}) {
   const [open, setOpen] = useState(false)
   return (
     <button
+      id={`alert-${alert.id}`}
       onClick={() => setOpen(!open)}
-      className="w-full text-left rounded-xl bg-white dark:bg-zinc-900 p-3 shadow-sm"
+      className={`w-full text-left rounded-xl p-3 shadow-sm transition-colors duration-500 ${
+        highlighted
+          ? "bg-amber-50 ring-2 ring-amber-400 dark:bg-amber-950/30"
+          : "bg-white dark:bg-zinc-900"
+      }`}
     >
       <div className="flex items-start gap-3">
         <div className="flex flex-wrap gap-1 pt-0.5">
@@ -121,9 +214,32 @@ function AlertCard({ alert }: { alert: AlertItem }) {
 // ---------- Views ----------
 
 function AlertsView({ payload }: { payload: AlertsPayload }) {
-  const affected = new Set(payload.affectedLines)
+  const [highlightedId, setHighlightedId] = useState<string | null>(null)
   const delays = payload.alerts.filter((a) => a.type === "delay")
   const changes = payload.alerts.filter((a) => a.type === "change")
+
+  // Build line → worst alert type map
+  const lineStatus = new Map<string, "ok" | "delay" | "change">()
+  for (const l of ALL_LINES) lineStatus.set(l, "ok")
+  for (const a of payload.alerts) {
+    for (const r of a.routes) {
+      const current = lineStatus.get(r)
+      if (a.type === "delay") lineStatus.set(r, "delay")
+      else if (a.type === "change" && current !== "delay") lineStatus.set(r, "change")
+    }
+  }
+
+  // Tap a line bubble → scroll to first matching alert + highlight it
+  const handleLineTap = (line: string) => {
+    const match = payload.alerts.find((a) => a.routes.includes(line))
+    if (!match) return
+    const el = document.getElementById(`alert-${match.id}`)
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" })
+      setHighlightedId(match.id)
+      setTimeout(() => setHighlightedId(null), 2000)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-20 overflow-auto bg-zinc-100 dark:bg-black pt-16 pb-6 px-4">
@@ -133,8 +249,19 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
           <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-3 uppercase tracking-wide">
             Line Status
           </div>
-          <LineGrid affected={affected} />
-          <div className="mt-3 text-[11px] text-zinc-400 dark:text-zinc-500 text-center">
+          <LineGrid lineStatus={lineStatus} onLineTap={handleLineTap} />
+          <div className="mt-3 flex items-center justify-center gap-4 text-[11px] text-zinc-400 dark:text-zinc-500">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-red-500" /> Delay
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-amber-500" /> Change
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-green-500" /> Good
+            </span>
+          </div>
+          <div className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500 text-center">
             Updated {new Date(payload.updatedAt).toLocaleTimeString()}
           </div>
         </div>
@@ -150,7 +277,7 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
             </div>
             <div className="space-y-2">
               {delays.map((a) => (
-                <AlertCard key={a.id} alert={a} />
+                <AlertCard key={a.id} alert={a} highlighted={a.id === highlightedId} />
               ))}
             </div>
           </div>
@@ -167,7 +294,7 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
             </div>
             <div className="space-y-2">
               {changes.map((a) => (
-                <AlertCard key={a.id} alert={a} />
+                <AlertCard key={a.id} alert={a} highlighted={a.id === highlightedId} />
               ))}
             </div>
           </div>
@@ -188,42 +315,72 @@ function AlertsView({ payload }: { payload: AlertsPayload }) {
 }
 
 function MapViewer() {
+  const stateRef = useRef({ x: 0, y: 0, scale: 1 })
+  const MIN_SCALE = 0.5
+  const MAX_SCALE = 12
+
   return (
     <div className="h-screen w-screen bg-white dark:bg-black">
       <TransformWrapper
-        minScale={0.5}
-        maxScale={12}
+        minScale={MIN_SCALE}
+        maxScale={MAX_SCALE}
         initialScale={1}
         panning={{ velocityDisabled: false }}
         pinch={{ step: 5 }}
-        wheel={{ step: 0.1 }}
+        wheel={{ disabled: true }}
         doubleClick={{ disabled: true }}
         limitToBounds
         centerOnInit
       >
-        {({ resetTransform }) => (
-          <>
-            <div className="fixed bottom-4 right-4 z-30">
-              <button
-                onClick={() => resetTransform()}
-                className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black shadow dark:bg-zinc-900 dark:text-white"
+        {({ setTransform, resetTransform, instance }) => {
+          // Track transform state for wheel handler
+          const ts = instance.transformState
+          stateRef.current = {
+            x: ts.positionX,
+            y: ts.positionY,
+            scale: ts.scale,
+          }
+
+          return (
+            <>
+              <div className="fixed bottom-4 right-4 z-30">
+                <button
+                  onClick={() => resetTransform()}
+                  className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black shadow dark:bg-zinc-900 dark:text-white"
+                >
+                  Reset
+                </button>
+              </div>
+              <TransformComponent
+                wrapperClass="!w-screen !h-screen"
+                wrapperProps={{
+                  onWheelCapture: (e: React.WheelEvent) => {
+                    e.preventDefault()
+                    const { x, y, scale } = stateRef.current
+                    // ctrl/meta + scroll or trackpad pinch = zoom
+                    // regular scroll/trackpad swipe = pan
+                    const isZoom = e.ctrlKey || e.metaKey
+                    if (isZoom) {
+                      const factor = Math.exp(-e.deltaY * 0.01)
+                      const next = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor))
+                      setTransform(x, y, next, 0)
+                    } else {
+                      setTransform(x - e.deltaX, y - e.deltaY, scale, 0)
+                    }
+                  },
+                  style: { touchAction: "none" },
+                }}
               >
-                Reset
-              </button>
-            </div>
-            <TransformComponent
-              wrapperClass="!w-screen !h-screen"
-              wrapperProps={{ style: { touchAction: "none" } }}
-            >
-              <img
-                src="/map.png"
-                alt="Subway map"
-                className="block w-screen h-auto select-none"
-                draggable={false}
-              />
-            </TransformComponent>
-          </>
-        )}
+                <img
+                  src="/map.png"
+                  alt="Subway map"
+                  className="block w-screen h-auto select-none"
+                  draggable={false}
+                />
+              </TransformComponent>
+            </>
+          )
+        }}
       </TransformWrapper>
     </div>
   )
